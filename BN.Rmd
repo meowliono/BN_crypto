@@ -1,0 +1,106 @@
+
+```{r}
+library(dplyr)
+crypto_gardia<-read.csv("/Users/yiraozhang/Desktop/BN_Crypto/CryptoGardia.csv")
+turbidity_ecoli<-read.csv("/Users/yiraozhang/Desktop/BN_Crypto/TurbidityEcoli.csv")
+prec<-read.csv("/Users/yiraozhang/Desktop/BN_Crypto/rainfall.csv")
+data<-merge(crypto_gardia, turbidity_ecoli,by=c("Date","Site"))
+prec<-select(prec,"Date","PRCP","SNOW","TMAX","TMIN","TOBS")
+prec<-prec[is.na(prec$TOBS)==0,]
+prec<-prec %>%group_by(Date) %>% summarise_each(funs(mean))
+df<-merge(data, prec, by="Date")
+df<-subset(df,Giardia...50L!="Cancel")
+df<-select(df,"Giardia...50L","Average.24hrTurbidity.NTU.","Coliform..Fecal.fc.100mL.","PRCP","TOBS")
+colnames(df) <- c("Source","Turbidity","Ecoli","Precipitation","Temperature")
+write.csv(df,"/Users/yiraozhang/Desktop/BN_Crypto/combined.csv")
+```
+```{r}
+#Categorize data set
+df$Source<-as.numeric(df$Source)
+df$Source<-cut(df$Source, breaks = c(-1, 3, 6, Inf),
+    labels = c("LOW(<=3cytst/50L)","MEDIUM(3-6cycst/50L)","HIGH(>6cysts/50L)"))
+df$Turbidity<-cut(df$Turbidity, breaks=c(-1,1,Inf), labels = c("QUALIFIED","FAILED"))
+df$Precipitation<-cut(df$Precipitation, breaks=c(-1, 30, 60, Inf), labels = c("LIGHT","MODERATE","HEAVY"))
+df$Temperature<-cut(df$Temperature, breaks=c(-Inf, 12, 25, Inf), labels=c("LOW","MODERATE","HIGH"))
+df$Ecoli<-sub("<1","0",df$Ecoli)
+for (i in 1:length(df$Ecoli)) {
+  if(substring(df$Ecoli[i],1,1)=="E"){
+    df$Ecoli[i]=sub(".", "", df$Ecoli[i])
+  }
+}
+df$Ecoli<-as.numeric(df$Ecoli)
+df$Ecoli<-cut(df$Ecoli, breaks=c(-1,5,10,Inf),labels = c("LOW","MEDIUM","HIGH"))
+df
+```
+```{r}
+#conditional probability tables
+library(bnlearn)
+cpt_prec = matrix(c(0.3, 0.4, 0.3), ncol = 3, dimnames = list(NULL, c("LIGHT", "MODERATE","HEAVY")))
+cpt_temp = matrix(c(0.3, 0.5, 0.2), ncol = 3, dimnames = list(NULL, c("LOW", "MODERATE","HIGH")))
+cpt_contaminated= matrix(c(0.1, 0.9), ncol = 2, dimnames = list(NULL, c("TRUE","FALSE")))
+cpt_turb=c(0.3,0.7,0.95,0.05)
+dim(cpt_turb)=c(2, 2)
+dimnames(cpt_turb) = list("Turbidity" = c("QUALIFIED","FAILED"), "Contaminated"=c("TRUE","FALSE"))
+cpt_ecoli=c(0.1,0.3,0.6,0.6,0.3,0.1)
+dim(cpt_ecoli)=c(3, 2)
+dimnames(cpt_ecoli) = list("Ecoli" = c("LOW","MEDIUM","HIGH"), "Contaminated"=c("TRUE","FALSE"))
+cpt_source=c(0.7,0.2,0.1,0.6,0.3,0.1,0.5,0.3,0.2,
+             0.6,0.3,0.1,0.5,0.4,0.1,0.4,0.3,0.3,
+             0.5,0.3,0.2,0.4,0.3,0.3,0.3,0.3,0.4,
+             1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0)
+dim(cpt_source)=c(3,3,3,2)
+dimnames(cpt_source)=list("Source"=c("LOW(<=3cytst/50L)","MEDIUM(3-6cycst/50L)","HIGH(>6cysts/50L)"),"Precipitation"=c("LIGHT","MODERATE","HEAVY"),"Temperature"=c("LOW","MODERATE","HIGH"),"Contaminated"=c("TRUE","FALSE"))
+#cpt_decay=c(0.7,0.2,0.1,0.3,0.5,0.2,0.1,0.3,0.6)
+#dim(cpt_decay)=c(3, 3)
+#dimnames(cpt_decay) = list("Decay" = c("LOW","MODERATE","HIGH"), "Temperature"=c("LOW","MODERATE","HIGH"))
+cpt_treatment= matrix(c(0.6, 0.4), ncol = 2, dimnames = list(NULL, c("UV","MEMBRANE")))
+cpt_effectiveness=c(0.9,0.1,0.8,0.2)
+dim(cpt_effectiveness)=c(2, 2)
+dimnames(cpt_effectiveness) = list("Effectiveness" = c("2.9LOG","3.5LOG"), "Treatment"=c("UV","MEMBRANE"))
+cpt_tap=c(0.67,0.33,0,0,0.33,0.67,0,0,1,1,0,0,1,0,0,0.88,0.12,0)
+dim(cpt_tap)=c(3,3,2)
+dimnames(cpt_tap)=list("Tap"=c("LOW(<50)","MEDIUM(50-100)","HIGH(>100)"),"Source"=c("LOW(<=3cytst/50L)","MEDIUM(3-6cycst/50L)","HIGH(>6cysts/50L)"),"Effectiveness"=c("2.9LOG","3.5LOG"))
+#3--0.00377677623(75/10^6L),0.0009486832(20/10^6L)
+#6--0.00755355247(150/10^6L), 0.0018973665(38/10^6L)
+#9--0.0113303287(226/10^6L), 0.0028460498(57/10^6L)
+cpt_comsuption= matrix(c(0.2,0.6,0.2), ncol = 3, dimnames = list(NULL, c("2.5L/d","3.2L/d","4L/d")))
+cpt_dw_exposure=c(1,0,0,0.1,0.9,0,0.1,0.9,0,0.85,0.15,0,0,0.7,0.3,0,0,1,0.68,0.32,0,0,0.4,0.6,0,0,1)
+dim(cpt_dw_exposure)=c(3,3,3)
+dimnames(cpt_dw_exposure)=list("Exposure"=c("LOW(<0.05cysts/y)","MEDIUM(0.05-0.1cysts/y)","HIGH(>0.1cysts/y)"),"Tap"=c("LOW(<50)","MEDIUM(50-100)","HIGH(>100)"),"Intake"=c("2.5L/d","3.2L/d","4L/d"))
+#50*10^-6*2.5*365=0.046
+#100*10^-6*2.5*365=0.092
+#50*10^-6*3.2*365=0.0584
+#100*10^-6*3.2*365=0.1168
+#50*10^-6*4*365=0.073
+#100*10^-6*4*365=0.146
+cpt_health=matrix(c(0.9,0.1),ncol=2,dimnames =list(NULL,c("TRUE","FALSE")))
+cpt_risk=c(1,0,0,0.8,0.1,0.1,0.5,0.5,0,0.3,0.6,0.1,0,0.8,0.2,0,0.6,0.4)
+dim(cpt_risk)=c(3,2,3)
+dimnames(cpt_risk)=list("Risk"=c("LOW(<0.001)","MEDIUM(0.001-0.005)","HIGH(>0.005)"),"Health"=c("TRUE","FALSE"),"Exposure"=c("LOW(<0.05cysts/y)","MEDIUM(0.05-0.1cysts/y)","HIGH(>0.1cysts/y)"))
+```
+```{r}
+net<-model2network("[Precipitation][Temperature][Contaminated][Source|Precipitation:Temperature:Contaminated][Turbidity|Contaminated][Ecoli|Contaminated][Treatment][Effectiveness|Treatment][Tap|Source:Effectiveness][Intake][Exposure|Tap:Intake][Health][Risk|Exposure:Health]")
+fit<-custom.fit(net, dist = list(Source=cpt_source, Precipitation=cpt_prec, Temperature=cpt_temp, Contaminated=cpt_contaminated, Turbidity=cpt_turb, Ecoli=cpt_ecoli,Treatment=cpt_treatment, Effectiveness=cpt_effectiveness, Tap=cpt_tap,Intake=cpt_comsuption, Exposure=cpt_dw_exposure, Health=cpt_health, Risk=cpt_risk))
+fit
+```
+```{r}
+#Parameter learning
+net1<-model2network("[Precipitation][Temperature][Source|Precipitation:Temperature][Turbidity|Source][Ecoli|Source]")
+learned = bn.fit(net1, df, method = "bayes")
+net<-model2network("[Precipitation][Temperature][Source|Precipitation:Temperature][Turbidity|Source][Ecoli|Source][Treatment][Effectiveness|Treatment][Tap|Source:Effectiveness][Intake][Exposure|Tap:Intake][Health][Risk|Exposure:Health]")
+fit<-custom.fit(net, dist = list(Source=learned$Source$prob,Precipitation=learned$Precipitation$prob, Temperature=learned$Temperature$prob, Turbidity=learned$Turbidity$prob, Ecoli=learned$Ecoli$prob,Treatment=cpt_treatment, Effectiveness=cpt_effectiveness, Tap=cpt_tap,Intake=cpt_comsuption, Exposure=cpt_dw_exposure, Health=cpt_health, Risk=cpt_risk))
+plot(net)
+```
+```{r}
+#Validation
+
+```
+```{r}
+#Inference
+#Scenario1--Heavy rain
+#Scenario2--Treatment breakdown
+#Scenario3--Climate change
+#Scenario4--Sewage flood in
+#Scenario5--UV vs Filtration
+#Scenario6--For people who have immune system disease
+```
